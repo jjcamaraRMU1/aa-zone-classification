@@ -1,7 +1,3 @@
 streamlit
 pandas
 plotly
-
-
-
-"Add dependencies to requirements.txt"
