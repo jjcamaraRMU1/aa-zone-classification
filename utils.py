@@ -43,58 +43,72 @@ def setup_page():
     st.markdown("Compare performance between last week and current week")
 
 def load_files():
-    """Carga y valida los archivos CSV"""
+    """Carga y valida los archivos Excel"""
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Last Week's Data")
         last_week_file = st.file_uploader(
-            "Upload last week's data (CSV)",
-            type=["csv"],
+            "Upload last week's data (Excel)",
+            type=["xlsx", "xls"],
             key='last_week',
-            help="Upload CSV file with last week's performance data"
+            help="Upload Excel file with last week's performance data"
         )
     
     with col2:
         st.subheader("Current Week's Data")
         current_week_file = st.file_uploader(
-            "Upload current week's data (CSV)",
-            type=["csv"],
+            "Upload current week's data (Excel)",
+            type=["xlsx", "xls"],
             key='current_week',
-            help="Upload CSV file with current week's performance data"
+            help="Upload Excel file with current week's performance data"
         )
     
     return last_week_file, current_week_file
 
-def validate_and_process_data(file, period):
-    """Valida y procesa los datos del archivo CSV"""
+def validate_and_process_data(file, week_identifier):
     try:
-        df = pd.read_csv(file)
+        # Leer archivo Excel
+        df = pd.read_excel(file)
         
-        # Validar columnas requeridas
-        missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
-        if missing_columns:
-            st.error(f"Missing required columns in {period} file: {', '.join(missing_columns)}")
-            return None
+        # Renombrar columnas para mantener consistencia con el resto del código
+        column_mapping = {
+            'User_Id': 'ID',
+            'Stow_Rate': 'RATES',
+            'UIT': 'UIT',
+            'Entry_Date': 'DATE'
+        }
         
-        # Renombrar columnas
-        df.rename(columns=COLUMN_MAPPINGS, inplace=True)
+        df = df.rename(columns=column_mapping)
         
-        # Validar datos
-        if df['RATES'].isnull().any() or df['UIT'].isnull().any():
-            st.warning(f"Found null values in {period} data. These rows will be removed.")
-            df = df.dropna(subset=['RATES', 'UIT'])
+        # Convertir la columna de fecha al formato correcto
+        df['DATE'] = pd.to_datetime(df['DATE'], format='%d/%m/%Y')
         
-        # Validar rangos
-        if (df['RATES'] < 0).any() or (df['UIT'] < 0).any() or (df['UIT'] > 100).any():
-            st.error(f"Invalid values found in {period} data")
-            return None
+        # Convertir RATES y UIT a float si no lo están ya
+        df['RATES'] = pd.to_numeric(df['RATES'], errors='coerce')
+        df['UIT'] = pd.to_numeric(df['UIT'], errors='coerce')
+        
+        # Si el UIT está en notación científica, convertirlo a decimal normal
+        if (df['UIT'] > 100).any():
+            df['UIT'] = df['UIT'].apply(lambda x: x / 10**16 if x > 100 else x)
+        
+        # Eliminar filas con valores nulos
+        df = df.dropna(subset=['ID', 'RATES', 'UIT', 'DATE'])
+        
+        # Validar que las columnas necesarias existan
+        required_columns = ['ID', 'RATES', 'UIT', 'DATE']
+        if not all(col in df.columns for col in required_columns):
+            raise ValueError("Faltan columnas requeridas en el archivo")
+        
+        # Validar que los datos numéricos sean válidos
+        if (df['RATES'] < 0).any() or (df['UIT'] < 0).any():
+            raise ValueError("Se encontraron valores negativos en RATES o UIT")
         
         return df
         
     except Exception as e:
-        logging.error(f"Error processing {period} file: {str(e)}")
-        st.error(f"Error processing {period} file: {str(e)}")
+        logging.error(f"Error procesando archivo {week_identifier}: {str(e)}")
+        st.error(f"Error procesando archivo {week_identifier}: {str(e)}")
         return None
 
 def apply_zone_classification(df, user_rate, user_uit):
@@ -120,6 +134,7 @@ def classify_zone(row, user_rate, user_uit):
         return 'Zone 3: Low Rate & High UIT'
     else:
         return 'Zone 4: Low Rate & Low UIT'
+
 
 def display_current_week_scatter(df_current, user_rate, user_uit):
     """Muestra el gráfico de dispersión de la semana actual"""
@@ -180,11 +195,12 @@ def display_current_week_scatter(df_current, user_rate, user_uit):
         st.error("Error al mostrar el gráfico de dispersión")
 
 def display_zone_distribution(df_current):
-    """Muestra la distribución de zonas"""
+    """Muestra la distribución de zonas y análisis de antigüedad"""
     try:
         st.subheader("Current Week Zone Distribution")
         zone_counts = df_current['Zone'].value_counts()
         
+        # Primera fila: Distribución de zonas
         col1, col2 = st.columns([2,1])
         
         with col1:
@@ -204,10 +220,65 @@ def display_zone_distribution(df_current):
             for zone, count in zone_counts.items():
                 percentage = (count/total_associates) * 100
                 st.write(f"**{zone}:** {count} associates ({percentage:.1f}%)")
+        
+        # Separador visual
+        st.markdown("---")
+        
+        # Segunda sección: Análisis de antigüedad
+        st.subheader("Tenure Analysis by Zone")
+        
+        selected_zone = st.selectbox(
+            "Select Zone for Tenure Analysis:",
+            ['All Zones'] + list(df_current['Zone'].unique()),
+            key='tenure_zone_selector'
+        )
+        
+        # Filtrar datos por zona seleccionada y crear una copia explícita
+        if selected_zone != 'All Zones':
+            zone_df = df_current[df_current['Zone'] == selected_zone].copy()  # Crear copia explícita
+        else:
+            zone_df = df_current.copy()  # Crear copia explícita
+            
+        # Nueva fila para el análisis de antigüedad
+        tenure_col1, tenure_col2 = st.columns([2,1])
+        
+        with tenure_col1:
+            try:
+                tenure_analysis = analyze_tenure_by_zone(zone_df)
+                if tenure_analysis:
+                    tenure_data = list(tenure_analysis.values())[0] if selected_zone != 'All Zones' else tenure_analysis['All Zones']
+                    
+                    fig_tenure = px.pie(
+                        values=list(tenure_data.values()),
+                        names=['Veteranos', 'Mid', 'Nuevos'],
+                        title=f'Tenure Distribution - {selected_zone}',
+                        color_discrete_sequence=['#2ecc71', '#f1c40f', '#e74c3c']
+                    )
+                    fig_tenure.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig_tenure, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error en el gráfico de antigüedad: {str(e)}")
+        
+        with tenure_col2:
+            try:
+                if tenure_analysis:
+                    st.markdown("### Tenure Details")
+                    tenure_data = list(tenure_analysis.values())[0] if selected_zone != 'All Zones' else tenure_analysis['All Zones']
+                    
+                    # Mostrar los datos
+                    st.write(f"**Veteranos (>2 años):** {tenure_data['Veteranos']:.1f}%")
+                    st.write(f"**Mid (1-2 años):** {tenure_data['Mid']:.1f}%")
+                    st.write(f"**Nuevos (<1 año):** {tenure_data['Nuevos']:.1f}%")
+                    
+                    zone_total = len(zone_df)
+                    st.write(f"\n**Total associates in {selected_zone}:** {zone_total}")
+            except Exception as e:
+                st.error(f"Error en los detalles de antigüedad: {str(e)}")
                 
     except Exception as e:
         logging.error(f"Error en distribución de zonas: {str(e)}")
         st.error("Error al mostrar la distribución de zonas")
+
 
 def filter_by_zone(df_last, df_current, selected_zone):
     """Filtra los DataFrames por zona seleccionada"""
@@ -699,3 +770,57 @@ def display_trend_analysis(comparison_df):
     except Exception as e:
         logging.error(f"Error en análisis de tendencias: {str(e)}")
         st.error("Error al mostrar análisis de tendencias")
+
+
+def analyze_tenure_by_zone(df):
+    """
+    Analiza la distribución de antigüedad por zona
+    Args:
+        df: DataFrame con las columnas 'DATE' y 'Zone'
+    Returns:
+        dict: Diccionario con los porcentajes de cada categoría de antigüedad
+    """
+    try:
+        today = pd.Timestamp.now()
+        df = df.copy()  # Crear una copia explícita del DataFrame
+        
+        def get_tenure_group(entry_date):
+            try:
+                if isinstance(entry_date, str):
+                    entry_date = pd.to_datetime(entry_date, format='%d/%m/%Y')
+                days_employed = (today - entry_date).days
+                if days_employed < 365:
+                    return "Nuevos"
+                elif days_employed < 730:
+                    return "Mid"
+                else:
+                    return "Veteranos"
+            except Exception as e:
+                logging.error(f"Error procesando fecha {entry_date}: {str(e)}")
+                return "Sin clasificar"
+        
+        # Calcular la antigüedad para cada empleado
+        df['Tenure_Group'] = df['DATE'].apply(get_tenure_group)
+        
+        # Calcular porcentajes por grupo de antigüedad
+        tenure_distribution = df['Tenure_Group'].value_counts(normalize=True) * 100
+        
+        # Asegurar que tenemos todas las categorías
+        categories = ['Veteranos', 'Mid', 'Nuevos']
+        tenure_data = {
+            'Veteranos': tenure_distribution.get('Veteranos', 0),
+            'Mid': tenure_distribution.get('Mid', 0),
+            'Nuevos': tenure_distribution.get('Nuevos', 0)
+        }
+        
+        # Si es una zona específica, devolver solo esa zona
+        if len(df['Zone'].unique()) == 1:
+            return {df['Zone'].iloc[0]: tenure_data}
+        # Si son todas las zonas, devolver 'All Zones'
+        else:
+            return {'All Zones': tenure_data}
+            
+    except Exception as e:
+        logging.error(f"Error en analyze_tenure_by_zone: {str(e)}")
+        st.error(f"Error al analizar la antigüedad: {str(e)}")
+        return None
