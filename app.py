@@ -47,7 +47,6 @@ def main():
                     user_uit = st.number_input(
                         "UIT de Referencia",
                         min_value=0.0,
-                        max_value=100.0,
                         value=float(round(df_current['UIT'].median(), 2)),
                         help="Porcentaje objetivo de Unknown Idle Time"
                     )
@@ -58,14 +57,13 @@ def main():
                 
                 # Visualización principal
                 display_current_week_scatter(df_current, user_rate, user_uit)
+                
+                # Visualización de distribución de zonas con análisis de antigüedad
                 display_zone_distribution(df_current)
                 
-                # Análisis por zona
-                st.subheader("Análisis por Zona")
-                selected_zone = st.selectbox(
-                    "Seleccionar zona para analizar:",
-                    ['All Zones'] + list(df_current['Zone'].unique())
-                )
+                # Análisis comparativo
+                st.subheader("Análisis Comparativo")
+                selected_zone = st.session_state.get('selected_zone', 'All Zones')
                 
                 # Filtrar por zona seleccionada
                 df_last_filtered, df_current_filtered = filter_by_zone(
